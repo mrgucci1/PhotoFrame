@@ -14,12 +14,26 @@
 ````markdown
 ````markdown
 ````markdown
-# Raspberry Pi Photo Frame Setup Instructions
+# Raspberry Pi Photo Frame
+
+A digital photo frame application for Raspberry Pi that displays random photos from an API endpoint with location information overlay. Perfect for creating a dynamic photo display that updates automatically.
+
+## Features
+
+- 📸 Displays random photos from a remote API
+- 🌍 Shows location information overlay
+- 🔄 Automatic photo updates every minute
+- 💾 Smart caching system (15 photos cached for smooth transitions)
+- 🖥️ Full-screen display support
+- 🔌 Works offline with cached photos when internet is unavailable
+- ⚡ Optimized for Raspberry Pi Zero 2 W
 
 ## Prerequisites
+
 - Raspberry Pi Zero 2 W with Raspberry Pi OS installed
 - Internet connection configured
 - SSH access or direct access to the Pi
+- Display connected to the Pi
 
 ## Installation Steps
 
