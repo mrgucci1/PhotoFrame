@@ -151,15 +151,8 @@ class PhotoFrame:
                 x = image.width - text_width - padding
                 y = image.height - text_height - padding
                 
-                # Draw semi-transparent background for text
-                bg_padding = 5
-                draw.rectangle([
-                    x - bg_padding, y - bg_padding,
-                    x + text_width + bg_padding, y + text_height + bg_padding
-                ], fill=(0, 0, 0, 128))
-                
-                # Draw the text in white
-                draw.text((x, y), location_text, fill=(255, 255, 255), font=font)
+                # Draw the text in white with 50% transparency (127 out of 255)
+                draw.text((x, y), location_text, fill=(255, 255, 255, 127), font=font)
             
             return img_with_text
         except Exception as e:
