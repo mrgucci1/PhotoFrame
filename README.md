@@ -1,19 +1,3 @@
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
-````markdown
 # Raspberry Pi Photo Frame
 
 A digital photo frame application for Raspberry Pi that displays random photos from an API endpoint with location information overlay. Perfect for creating a dynamic photo display that updates automatically.
