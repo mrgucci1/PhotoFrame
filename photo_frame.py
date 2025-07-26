@@ -3,9 +3,7 @@ from PIL import Image, ImageTk, ImageDraw, ImageFont
 import tkinter as tk
 from io import BytesIO
 import threading
-import queue
 import time
-import json
 import gc
 import psutil
 import os
@@ -13,8 +11,6 @@ import os
 # --- Configuration ---
 API_ENDPOINT = "https://keatondalquist.com/api/random-photo-info"
 UPDATE_INTERVAL = 180000  # 3 minutes in milliseconds
-CACHE_SIZE = 2  # Small cache for Pi Zero
-PREFETCH_THRESHOLD = 1  # Start prefetching when cache has 1 or fewer photos
 MAX_MEMORY_MB = 150  # Lower memory limit for Pi Zero
 
 # --- API Photo Management ---
@@ -55,89 +51,6 @@ def get_random_photo_from_api():
         print(f"Error processing API response: {e}")
         return None
 
-class PhotoCache:
-    """Manages a cache of photos with memory management."""
-    
-    def __init__(self, cache_size=CACHE_SIZE):
-        self.cache_size = cache_size
-        self.photo_queue = queue.Queue(maxsize=cache_size)
-        self.is_fetching = False
-        self.fetch_thread = None
-        self.stop_fetching = False
-        
-    def start_background_fetching(self):
-        """Start background thread to keep cache filled."""
-        if not self.fetch_thread or not self.fetch_thread.is_alive():
-            self.stop_fetching = False
-            self.fetch_thread = threading.Thread(target=self._background_fetch, daemon=True)
-            self.fetch_thread.start()
-    
-    def stop_background_fetching(self):
-        """Stop background fetching."""
-        self.stop_fetching = True
-    
-    def get_memory_usage_mb(self):
-        """Get current memory usage in MB."""
-        process = psutil.Process(os.getpid())
-        return process.memory_info().rss / 1024 / 1024
-    
-    def cleanup_cache(self):
-        """Clear cache and force garbage collection."""
-        print("Cleaning up cache due to high memory usage...")
-        
-        while not self.photo_queue.empty():
-            try:
-                photo_data = self.photo_queue.get_nowait()
-                if photo_data and 'image' in photo_data:
-                    photo_data['image'].close()
-                    del photo_data['image']
-            except queue.Empty:
-                break
-        
-        gc.collect()
-        
-        print(f"Cache cleaned. Memory usage: {self.get_memory_usage_mb():.1f} MB")
-    
-    def _background_fetch(self):
-        """Background thread function to fetch photos."""
-        while not self.stop_fetching:
-            try:
-                memory_usage = self.get_memory_usage_mb()
-                if memory_usage > MAX_MEMORY_MB:
-                    self.cleanup_cache()
-                    time.sleep(10)
-                    continue
-                
-                if self.photo_queue.qsize() < self.cache_size:
-                    photo_data = get_random_photo_from_api()
-                    if photo_data:
-                        if not self.photo_queue.full():
-                            self.photo_queue.put(photo_data)
-                            print(f"Cached photo. Queue size: {self.photo_queue.qsize()}, Memory: {memory_usage:.1f} MB")
-                    else:
-                        print("Failed to fetch photo for cache")
-                        time.sleep(5)
-                else:
-                    time.sleep(30)
-                    
-            except Exception as e:
-                print(f"Error in background fetch: {e}")
-                time.sleep(5)
-    
-    def get_photo(self):
-        """Get a photo from cache, or fetch immediately if cache is empty."""
-        try:
-            if not self.photo_queue.empty():
-                photo_data = self.photo_queue.get_nowait()
-                print(f"Retrieved cached photo. Queue size: {self.photo_queue.qsize()}")
-                return photo_data
-            else:
-                print("Cache empty, fetching photo immediately")
-                return get_random_photo_from_api()
-        except queue.Empty:
-            print("Cache empty, fetching photo immediately")
-            return get_random_photo_from_api()
-
 # --- Main Application ---
 class PhotoFrame:
     def __init__(self, root):
@@ -150,35 +63,77 @@ class PhotoFrame:
         self.label.pack(expand=True, fill='both')
 
         self.root.bind('<Escape>', lambda e: self.cleanup_and_exit())
-        
         self.root.bind('<Configure>', self.on_window_resize)
 
         self.current_pil_image = None
         self.current_location = None
         self.resize_timer = None
+        self.next_photo_data = None
+        self.fetch_thread = None
+        self.stop_fetching = False
         
-        # Initialize photo cache
-        self.photo_cache = PhotoCache()
-        self.photo_cache.start_background_fetching()
+        # Start background fetching for the first photo
+        self.start_background_fetch()
         
+        # Start the display cycle
         self.update_image()
         
         self.schedule_memory_check()
     
+    def start_background_fetch(self):
+        """Start background thread to fetch the next photo."""
+        if not self.fetch_thread or not self.fetch_thread.is_alive():
+            self.stop_fetching = False
+            self.fetch_thread = threading.Thread(target=self._fetch_next_photo, daemon=True)
+            self.fetch_thread.start()
+    
+    def _fetch_next_photo(self):
+        """Background thread function to fetch the next photo."""
+        while not self.stop_fetching:
+            try:
+                if not self.next_photo_data:
+                    print("Fetching next photo in background...")
+                    self.next_photo_data = get_random_photo_from_api()
+                    if self.next_photo_data:
+                        print("Next photo ready")
+                    else:
+                        print("Failed to fetch next photo, retrying in 5 seconds...")
+                        time.sleep(5)
+                        continue
+                
+                # Wait a bit before checking again
+                time.sleep(10)
+                    
+            except Exception as e:
+                print(f"Error in background fetch: {e}")
+                time.sleep(5)
+    
+    def get_memory_usage_mb(self):
+        """Get current memory usage in MB."""
+        try:
+            process = psutil.Process(os.getpid())
+            return process.memory_info().rss / 1024 / 1024
+        except:
+            return 0
+    
     def cleanup_and_exit(self):
         """Clean up resources before exiting."""
         print("Cleaning up before exit...")
-        self.photo_cache.stop_background_fetching()
+        self.stop_fetching = True
         
         # Close current image
         if self.current_pil_image:
             self.current_pil_image.close()
         
+        # Close next photo if it exists
+        if self.next_photo_data and 'image' in self.next_photo_data:
+            self.next_photo_data['image'].close()
+        
         self.root.destroy()
     
     def schedule_memory_check(self):
         """Schedule periodic memory monitoring."""
-        memory_usage = self.photo_cache.get_memory_usage_mb()
+        memory_usage = self.get_memory_usage_mb()
         print(f"Memory check - Usage: {memory_usage:.1f} MB")
         
         if memory_usage > MAX_MEMORY_MB:
@@ -299,7 +254,20 @@ class PhotoFrame:
             # Store reference to old image for cleanup
             old_image = self.current_pil_image
             
-            photo_data = self.photo_cache.get_photo()
+            # Get the next photo (wait if not ready)
+            photo_data = None
+            if self.next_photo_data:
+                photo_data = self.next_photo_data
+                self.next_photo_data = None  # Clear it so background thread fetches next one
+            else:
+                print("Next photo not ready, fetching immediately...")
+                photo_data = get_random_photo_from_api()
+                if not photo_data:
+                    print("Failed to fetch photo immediately, retrying...")
+                    # Retry until we get a photo
+                    while not photo_data and not self.stop_fetching:
+                        time.sleep(2)
+                        photo_data = get_random_photo_from_api()
             
             if photo_data and 'image' in photo_data:
                 self.current_pil_image = photo_data['image']
@@ -308,6 +276,10 @@ class PhotoFrame:
                 
                 window_width = self.root.winfo_width()
                 window_height = self.root.winfo_height()
+                
+                # Ensure minimum window size
+                if window_width < 100 or window_height < 100:
+                    window_width, window_height = 800, 600
                 
                 display_image = self.current_pil_image.copy()
                 display_image.thumbnail((window_width, window_height), Image.Resampling.LANCZOS)
@@ -329,7 +301,7 @@ class PhotoFrame:
                         pass
 
             else:
-                print("Failed to get photo from cache or API")
+                print("Failed to get photo")
 
         except Exception as e:
             print(f"Error displaying image: {e}")
