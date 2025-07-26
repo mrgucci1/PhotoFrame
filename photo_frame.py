@@ -27,9 +27,19 @@ def get_random_photo_from_api():
             img_response = requests.get(data['fullUrl'], timeout=15)
             img_response.raise_for_status()
             
+            # Validate image before loading
+            if len(img_response.content) < 1024:  # Less than 1KB is suspicious
+                print("Image too small, skipping")
+                return None
+            
             try:
                 image = Image.open(BytesIO(img_response.content))
+                # Verify image is valid by loading it
                 image.load()
+                
+                # Convert to RGB if needed (handles various formats)
+                if image.mode not in ('RGB', 'RGBA'):
+                    image = image.convert('RGB')
                     
             except Exception as img_error:
                 print(f"Invalid image data: {img_error}")
@@ -56,13 +66,18 @@ class PhotoFrame:
     def __init__(self, root):
         self.root = root
         self.root.title("Photo Frame")
-        self.root.geometry("800x600")
         self.root.configure(bg='black')
+        
+        # Make fullscreen
+        self.root.attributes('-fullscreen', True)
+        
+        # Allow ESC to exit fullscreen and close
+        self.root.bind('<Escape>', lambda e: self.cleanup_and_exit())
+        self.root.bind('<F11>', lambda e: self.toggle_fullscreen())
 
         self.label = tk.Label(root, bg='black')
         self.label.pack(expand=True, fill='both')
 
-        self.root.bind('<Escape>', lambda e: self.cleanup_and_exit())
         self.root.bind('<Configure>', self.on_window_resize)
 
         self.current_pil_image = None
@@ -72,8 +87,15 @@ class PhotoFrame:
         self.fetch_thread = None
         self.stop_fetching = False
         
-        # Start background fetching for the first photo
+        # Start background fetching for the next photo
         self.start_background_fetch()
+        
+        # Get first photo immediately to show something
+        print("Fetching first photo...")
+        first_photo = get_random_photo_from_api()
+        if first_photo:
+            self.next_photo_data = first_photo
+            print("First photo ready")
         
         # Start the display cycle
         self.update_image()
@@ -89,17 +111,21 @@ class PhotoFrame:
     
     def _fetch_next_photo(self):
         """Background thread function to fetch the next photo."""
+        print("Background photo fetching thread started")
         while not self.stop_fetching:
             try:
                 if not self.next_photo_data:
                     print("Fetching next photo in background...")
-                    self.next_photo_data = get_random_photo_from_api()
-                    if self.next_photo_data:
-                        print("Next photo ready")
+                    photo_data = get_random_photo_from_api()
+                    if photo_data:
+                        self.next_photo_data = photo_data
+                        print("Next photo ready in background")
                     else:
                         print("Failed to fetch next photo, retrying in 5 seconds...")
                         time.sleep(5)
                         continue
+                else:
+                    print("Next photo already available, waiting...")
                 
                 # Wait a bit before checking again
                 time.sleep(10)
@@ -107,6 +133,7 @@ class PhotoFrame:
             except Exception as e:
                 print(f"Error in background fetch: {e}")
                 time.sleep(5)
+        print("Background photo fetching thread stopped")
     
     def get_memory_usage_mb(self):
         """Get current memory usage in MB."""
@@ -130,6 +157,15 @@ class PhotoFrame:
             self.next_photo_data['image'].close()
         
         self.root.destroy()
+    
+    def toggle_fullscreen(self):
+        """Toggle between fullscreen and windowed mode."""
+        current_state = self.root.attributes('-fullscreen')
+        self.root.attributes('-fullscreen', not current_state)
+        if not current_state:
+            print("Entered fullscreen mode")
+        else:
+            print("Exited fullscreen mode")
     
     def schedule_memory_check(self):
         """Schedule periodic memory monitoring."""
@@ -254,25 +290,34 @@ class PhotoFrame:
             # Store reference to old image for cleanup
             old_image = self.current_pil_image
             
-            # Get the next photo (wait if not ready)
+            # Get the next photo (wait if not ready, but don't block indefinitely)
             photo_data = None
             if self.next_photo_data:
                 photo_data = self.next_photo_data
                 self.next_photo_data = None  # Clear it so background thread fetches next one
+                print("Using pre-fetched photo")
             else:
-                print("Next photo not ready, fetching immediately...")
-                photo_data = get_random_photo_from_api()
+                print("Next photo not ready, trying to fetch immediately...")
+                # Try a few times but don't block forever
+                for attempt in range(3):
+                    if self.stop_fetching:
+                        break
+                    photo_data = get_random_photo_from_api()
+                    if photo_data:
+                        break
+                    print(f"Fetch attempt {attempt + 1} failed, retrying...")
+                    time.sleep(1)
+                
                 if not photo_data:
-                    print("Failed to fetch photo immediately, retrying...")
-                    # Retry until we get a photo
-                    while not photo_data and not self.stop_fetching:
-                        time.sleep(2)
-                        photo_data = get_random_photo_from_api()
+                    print("Failed to fetch photo after 3 attempts, will try again next cycle")
+                    # Schedule next update sooner to retry
+                    self.root.after(30000, self.update_image)  # Try again in 30 seconds
+                    return
             
             if photo_data and 'image' in photo_data:
                 self.current_pil_image = photo_data['image']
                 self.current_location = photo_data['location']
-                print(f"Using photo with location: {self.current_location}")
+                print(f"Displaying photo with location: {self.current_location}")
                 
                 window_width = self.root.winfo_width()
                 window_height = self.root.winfo_height()
@@ -292,6 +337,7 @@ class PhotoFrame:
                 
                 self.tk_image = ImageTk.PhotoImage(display_image)
                 self.label.config(image=self.tk_image)
+                print("Photo displayed successfully")
                 
                 # Clean up the old image after successful display
                 if old_image:
@@ -301,10 +347,12 @@ class PhotoFrame:
                         pass
 
             else:
-                print("Failed to get photo")
+                print("No valid photo data available")
 
         except Exception as e:
             print(f"Error displaying image: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             # Clean up temporary images
             if display_image:
@@ -320,6 +368,17 @@ class PhotoFrame:
             print("Window destroyed, stopping updates")
 
 if __name__ == '__main__':
+    # Test API connectivity first
+    print("Testing API connectivity...")
+    test_photo = get_random_photo_from_api()
+    if test_photo:
+        print("API test successful!")
+        # Clean up test photo
+        if 'image' in test_photo:
+            test_photo['image'].close()
+    else:
+        print("WARNING: API test failed - photos may not load")
+    
     try:
         root = tk.Tk()
         app = PhotoFrame(root)
@@ -336,6 +395,8 @@ if __name__ == '__main__':
             app.cleanup_and_exit()
     except Exception as e:
         print(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
         if 'app' in locals():
             try:
                 app.cleanup_and_exit()
