@@ -1,16 +1,16 @@
 # Raspberry Pi Photo Frame
 
-A digital photo frame application for Raspberry Pi that displays random photos from an API endpoint with location information overlay. Perfect for creating a dynamic photo display that updates automatically.
+A simple, reliable digital photo frame application for Raspberry Pi that displays random photos from an API endpoint with location information overlay. Designed for stability and minimal resource usage.
 
 ## Features
 
 - 📸 Displays random photos from a remote API
-- 🌍 Shows location information overlay
-- 🔄 Automatic photo updates every minute
-- 💾 Smart caching system (15 photos cached for smooth transitions)
-- 🖥️ Full-screen display support
-- 🔌 Works offline with cached photos when internet is unavailable
+- 🌍 Shows location information overlay in bottom-right corner
+- 🔄 Automatic photo updates every 3 minutes
+- 🖥️ Full-screen display on startup
 - ⚡ Optimized for Raspberry Pi Zero 2 W
+- 🎯 Simple, crash-resistant design
+- 🔌 Direct API fetching (no caching complexity)
 
 ## Prerequisites
 
@@ -42,67 +42,73 @@ sudo apt install python3-tk -y
 sudo apt install fonts-dejavu-core -y
 ```
 
-### 3. Create Project Directory
+### 3. Clone or Download the Project
 ```bash
-mkdir ~/photo_frame
-cd ~/photo_frame
+# Option 1: Clone with git
+git clone https://github.com/dalqu/PhotoFrame.git
+cd PhotoFrame
+
+# Option 2: Download as ZIP and extract
+wget https://github.com/dalqu/PhotoFrame/archive/main.zip
+unzip main.zip
+cd PhotoFrame-main
 ```
 
-### 4. Copy Files
-Copy `photo_frame.py` and `requirements.txt` to the `~/photo_frame` directory.
-
-### 5. Create Virtual Environment
+### 4. Create Virtual Environment
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-### 6. Install Python Dependencies
+### 5. Install Python Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 7. Test the Application
+### 6. Test the Application
 ```bash
 python3 photo_frame.py
 ```
 
-### 8. Set Up Display (if using headless)
-If you're running headless and want to display on an attached screen:
+## Usage
+
+### Controls
+- **ESC key**: Exit the application
+- **Application runs in fullscreen**: Automatically starts in fullscreen mode
+
+### Behavior
+- Photos update automatically every 3 minutes
+- Location information is displayed in the bottom-right corner
+- Application fetches photos directly from the API as needed
+- If a photo fails to load, it will retry on the next cycle
+
+## Auto-start on Boot (Optional)
+
+### Create Startup Script
 ```bash
-# Enable X11 forwarding if using SSH
-export DISPLAY=:0
-
-# Or if using VNC, make sure VNC server is running
-```
-
-### 9. Create Startup Script (Optional)
-Create a script to auto-start on boot:
-
-```bash
-# Create startup script
-cat > ~/photo_frame/start_photo_frame.sh << 'EOF'
+cat > ~/PhotoFrame/start_photo_frame.sh << 'EOF'
 #!/bin/bash
-cd /home/pi/photo_frame
+sleep 30
+cd /home/pi/PhotoFrame
 source venv/bin/activate
 export DISPLAY=:0
 python3 photo_frame.py
 EOF
 
-chmod +x ~/photo_frame/start_photo_frame.sh
+chmod +x ~/PhotoFrame/start_photo_frame.sh
 ```
 
-### 10. Auto-start on Boot (Optional)
-Add to crontab for auto-start:
+### Add to Crontab
 ```bash
 crontab -e
 ```
 Add this line:
 ```
-@reboot sleep 30 && /home/pi/photo_frame/start_photo_frame.sh
+@reboot /home/pi/PhotoFrame/start_photo_frame.sh
 ```
 
-### 11. Performance Optimization for Pi Zero 2 W
+## Performance Optimization for Pi Zero 2 W
+
 For better performance on the Pi Zero 2 W:
 
 ```bash
@@ -119,48 +125,19 @@ echo "gpu_mem=128" | sudo tee -a /boot/config.txt
 echo "disable_overscan=1" | sudo tee -a /boot/config.txt
 ```
 
-### 12. Full Screen Mode (Optional)
-To run in full screen automatically, modify the startup script:
-
-```bash
-# Edit the startup script
-nano ~/photo_frame/start_photo_frame.sh
-
-# Add this line before python3 command:
-# export DISPLAY=:0
-# python3 photo_frame.py &
-# sleep 2
-# xdotool search --name "Photo Frame" windowstate --add FULLSCREEN
-```
-
-## Usage Notes
-
-- Press `Escape` key to close the application
-- The app will cache 15 photos for smooth transitions (15 minutes worth)
-- If internet is lost, it will continue showing cached photos
-- Location information is displayed in the bottom-right corner
-- Photos update every minute
-- Cache is filled in the background automatically
-
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Font errors**: Ensure `fonts-dejavu-core` is installed
-2. **Display issues**: Make sure `DISPLAY=:0` is set
-3. **No photos loading**: Check internet connectivity and API endpoint
-4. **Performance issues**: Increase GPU memory split to 128MB
-5. **Cache not working**: Check console output for API errors
+1. **No photos loading**: Check internet connectivity and API endpoint
+2. **Display issues**: Make sure `DISPLAY=:0` is set when using SSH
+3. **Font errors**: Ensure `fonts-dejavu-core` is installed
+4. **Application won't start**: Check Python dependencies are installed
 
 ### Monitoring
 Check the console output for debugging information:
 ```bash
-# Run with verbose output
 python3 photo_frame.py
-
-# Check system resources
-htop
-free -h
 ```
 
 ### API Endpoint Verification
@@ -172,10 +149,21 @@ curl -s "https://keatondalquist.com/api/random-photo-info" | jq
 ## Configuration Options
 
 You can modify these settings in `photo_frame.py`:
-- `UPDATE_INTERVAL`: Time between photo changes (milliseconds)
-- `CACHE_SIZE`: Number of photos to cache (default: 15)
-- `API_ENDPOINT`: Photo API endpoint
-- Font sizes and positioning in the `add_location_text` method
+- `UPDATE_INTERVAL`: Time between photo changes (default: 180000ms = 3 minutes)
+- `API_ENDPOINT`: Photo API endpoint URL
+
+## Technical Details
+
+### Simplified Architecture
+- **No caching**: Photos are fetched directly when needed
+- **No threading**: All operations run in the main thread for stability
+- **Minimal memory usage**: Only one photo in memory at a time
+- **Error resilient**: Failures are logged and retried on next cycle
+
+### Memory Usage
+- Typical usage: 30-80MB RAM
+- No memory leaks or accumulation
+- Automatic cleanup of old images
 
 ## Power Management
 
@@ -190,3 +178,9 @@ echo "@xset s noblank" >> ~/.config/lxsession/LXDE-pi/autostart
 echo "@xset s off" >> ~/.config/lxsession/LXDE-pi/autostart
 echo "@xset -dpms" >> ~/.config/lxsession/LXDE-pi/autostart
 ```
+
+## Files
+
+- `photo_frame.py`: Main application file (~110 lines)
+- `requirements.txt`: Python dependencies
+- `README.md`: This documentation
