@@ -13,27 +13,33 @@ import os
 # --- Configuration ---
 API_ENDPOINT = "https://keatondalquist.com/api/random-photo-info"
 UPDATE_INTERVAL = 180000  # 3 minutes in milliseconds
-CACHE_SIZE = 10  
-PREFETCH_THRESHOLD = 3  # Start prefetching when cache has 3 or fewer photos
-MAX_MEMORY_MB = 200  # Maximum memory usage before cleanup (in MB)
+CACHE_SIZE = 2  # Small cache for Pi Zero
+PREFETCH_THRESHOLD = 1  # Start prefetching when cache has 1 or fewer photos
+MAX_MEMORY_MB = 150  # Lower memory limit for Pi Zero
 
 # --- API Photo Management ---
 def get_random_photo_from_api():
     """Fetch a random photo from the API endpoint."""
     try:
         print("Fetching random photo from API...")
-        response = requests.get(API_ENDPOINT, timeout=10)
+        response = requests.get(API_ENDPOINT, timeout=15)
         response.raise_for_status()
         
-        # Parse JSON response to get image URL and location
         data = response.json()
         
         if data and 'fullUrl' in data:
-            img_response = requests.get(data['fullUrl'], timeout=10)
+            img_response = requests.get(data['fullUrl'], timeout=15)
             img_response.raise_for_status()
-            image = Image.open(BytesIO(img_response.content))
-            location = data.get('place', 'Unknown Location')
             
+            try:
+                image = Image.open(BytesIO(img_response.content))
+                image.load()
+                    
+            except Exception as img_error:
+                print(f"Invalid image data: {img_error}")
+                return None
+            
+            location = data.get('place', 'Unknown Location')
             location = location.replace('_', ' ').replace('-', ' ').title()
         else:
             print("Invalid API response format")
@@ -150,7 +156,6 @@ class PhotoFrame:
         self.current_pil_image = None
         self.current_location = None
         self.resize_timer = None
-        self.previous_images = []
         
         # Initialize photo cache
         self.photo_cache = PhotoCache()
@@ -169,11 +174,6 @@ class PhotoFrame:
         if self.current_pil_image:
             self.current_pil_image.close()
         
-        # Close previous images
-        for img in self.previous_images:
-            if img:
-                img.close()
-        
         self.root.destroy()
     
     def schedule_memory_check(self):
@@ -182,55 +182,66 @@ class PhotoFrame:
         print(f"Memory check - Usage: {memory_usage:.1f} MB")
         
         if memory_usage > MAX_MEMORY_MB:
-            self.cleanup_old_images()
             gc.collect()
         
         self.root.after(300000, self.schedule_memory_check)
     
-    def cleanup_old_images(self):
-        """Clean up old PIL images."""
-        print("Cleaning up old images...")
-        for img in self.previous_images:
-            if img:
-                img.close()
-        self.previous_images.clear()
-        gc.collect()
-
     def add_location_text(self, image, location_text):
         """Add location text to the bottom-right corner of the image."""
+        img_with_text = None
+        draw = None
         try:
-            # Create a copy of the image to draw on
             img_with_text = image.copy()
             draw = ImageDraw.Draw(img_with_text)
             
-            # Try to use a better font, fallback to default if not available
+            # Use a simple, reliable font approach
+            font = None
             try:
-                # Adjust font size based on image size
-                font_size = max(12, min(24, image.width // 40))
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-            except (OSError, IOError):
-                try:
+                font_size = max(16, min(32, image.width // 30))
+                font_paths = [
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                    "/System/Library/Fonts/Arial.ttf"  # macOS fallback
+                ]
+                
+                for font_path in font_paths:
+                    try:
+                        font = ImageFont.truetype(font_path, font_size)
+                        break
+                    except (OSError, IOError):
+                        continue
+                        
+                if not font:
                     font = ImageFont.load_default()
-                except:
-                    font = None
+                    
+            except Exception as font_error:
+                print(f"Font loading error: {font_error}")
+                font = None
             
-            if font:
-                # Get text dimensions
-                bbox = draw.textbbox((0, 0), location_text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-                
-                # Position in bottom-right corner with padding
-                padding = 10
-                x = image.width - text_width - padding
-                y = image.height - text_height - padding
-                
-                # Draw the text in white with 50% transparency (127 out of 255)
-                draw.text((x, y), location_text, fill=(255, 255, 255, 127), font=font)
+            if font and location_text:
+                try:
+                    bbox = draw.textbbox((0, 0), location_text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                    
+                    padding = 15
+                    x = max(0, image.width - text_width - padding)
+                    y = max(0, image.height - text_height - padding)
+                    
+                    draw.text((x, y), location_text, fill=(255, 255, 255, 127), font=font)
+                except Exception as text_error:
+                    print(f"Text drawing error: {text_error}")
             
             return img_with_text
+            
         except Exception as e:
             print(f"Error adding location text: {e}")
+            # Clean up if we created a copy but failed
+            if img_with_text and img_with_text != image:
+                try:
+                    img_with_text.close()
+                except:
+                    pass
             return image
 
     def on_window_resize(self, event):
@@ -245,41 +256,56 @@ class PhotoFrame:
 
     def resize_current_image(self):
         """Resize the current image to fit the window."""
-        if self.current_pil_image:
-            try:
-                window_width = self.root.winfo_width()
-                window_height = self.root.winfo_height()
-                
-                resized_image = self.current_pil_image.copy()
-                resized_image.thumbnail((window_width, window_height), Image.Resampling.LANCZOS)
-                
-                if self.current_location:
-                    resized_image = self.add_location_text(resized_image, self.current_location)
-                
-                self.tk_image = ImageTk.PhotoImage(resized_image)
-                self.label.config(image=self.tk_image)
-                
-                resized_image.close()
-                
-            except Exception as e:
-                print(f"Error resizing image: {e}")
+        if not self.current_pil_image:
+            return
+            
+        resized_image = None
+        text_image = None
+        try:
+            window_width = self.root.winfo_width()
+            window_height = self.root.winfo_height()
+            
+            # Ensure minimum size
+            if window_width < 100 or window_height < 100:
+                return
+            
+            resized_image = self.current_pil_image.copy()
+            resized_image.thumbnail((window_width, window_height), Image.Resampling.LANCZOS)
+            
+            if self.current_location:
+                text_image = self.add_location_text(resized_image, self.current_location)
+                if text_image != resized_image:
+                    resized_image.close()  # Close the intermediate image
+                    resized_image = text_image
+            
+            self.tk_image = ImageTk.PhotoImage(resized_image)
+            self.label.config(image=self.tk_image)
+            
+        except Exception as e:
+            print(f"Error resizing image: {e}")
+        finally:
+            # Clean up temporary images
+            if resized_image:
+                try:
+                    resized_image.close()
+                except:
+                    pass
 
     def update_image(self):
-        if self.current_pil_image:
-            self.previous_images.append(self.current_pil_image)
-            if len(self.previous_images) > 3:
-                old_img = self.previous_images.pop(0)
-                if old_img:
-                    old_img.close()
-        
-        photo_data = self.photo_cache.get_photo()
-        
-        if photo_data:
-            self.current_pil_image = photo_data['image']
-            self.current_location = photo_data['location']
-            print(f"Using photo with location: {self.current_location}")
+        display_image = None
+        text_image = None
+        old_image = None
+        try:
+            # Store reference to old image for cleanup
+            old_image = self.current_pil_image
             
-            try:
+            photo_data = self.photo_cache.get_photo()
+            
+            if photo_data and 'image' in photo_data:
+                self.current_pil_image = photo_data['image']
+                self.current_location = photo_data['location']
+                print(f"Using photo with location: {self.current_location}")
+                
                 window_width = self.root.winfo_width()
                 window_height = self.root.winfo_height()
                 
@@ -287,28 +313,61 @@ class PhotoFrame:
                 display_image.thumbnail((window_width, window_height), Image.Resampling.LANCZOS)
                 
                 if self.current_location:
-                    display_image = self.add_location_text(display_image, self.current_location)
+                    text_image = self.add_location_text(display_image, self.current_location)
+                    if text_image != display_image:
+                        display_image.close()  # Close intermediate image
+                        display_image = text_image
                 
                 self.tk_image = ImageTk.PhotoImage(display_image)
                 self.label.config(image=self.tk_image)
                 
-                display_image.close()
+                # Clean up the old image after successful display
+                if old_image:
+                    try:
+                        old_image.close()
+                    except:
+                        pass
 
-            except Exception as e:
-                print(f"Error displaying image: {e}")
-        else:
-            print("Failed to get photo from cache or API")
+            else:
+                print("Failed to get photo from cache or API")
 
-        self.root.after(UPDATE_INTERVAL, self.update_image)
+        except Exception as e:
+            print(f"Error displaying image: {e}")
+        finally:
+            # Clean up temporary images
+            if display_image:
+                try:
+                    display_image.close()
+                except:
+                    pass
+        
+        # Schedule next update
+        try:
+            self.root.after(UPDATE_INTERVAL, self.update_image)
+        except tk.TclError:
+            print("Window destroyed, stopping updates")
 
 if __name__ == '__main__':
-    root = tk.Tk()
-    app = PhotoFrame(root)
-    
-    # Handle window close event
-    root.protocol("WM_DELETE_WINDOW", app.cleanup_and_exit)
-    
     try:
+        root = tk.Tk()
+        app = PhotoFrame(root)
+        
+        # Handle window close event
+        root.protocol("WM_DELETE_WINDOW", app.cleanup_and_exit)
+        
+        print("Starting photo frame application...")
         root.mainloop()
+        
     except KeyboardInterrupt:
-        app.cleanup_and_exit()
+        print("Keyboard interrupt received")
+        if 'app' in locals():
+            app.cleanup_and_exit()
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        if 'app' in locals():
+            try:
+                app.cleanup_and_exit()
+            except:
+                pass
+    finally:
+        print("Application terminated")
