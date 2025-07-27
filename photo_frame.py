@@ -3,10 +3,24 @@ from PIL import Image, ImageTk, ImageDraw, ImageFont
 import tkinter as tk
 from io import BytesIO
 import time
+import gc
+import os
 
 # --- Configuration ---
 API_ENDPOINT = "https://keatondalquist.com/api/random-photo-info"
 UPDATE_INTERVAL = 180000  # 3 minutes in milliseconds
+
+def get_memory_usage():
+    """Get current memory usage in MB."""
+    try:
+        with open('/proc/self/status', 'r') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    mem_kb = int(line.split()[1])
+                    return mem_kb / 1024  # Convert to MB
+    except:
+        pass
+    return 0
 
 def get_random_photo_from_api():
     """Fetch a random photo from the API endpoint."""
@@ -22,6 +36,7 @@ def get_random_photo_from_api():
             img_response.raise_for_status()
             
             image = Image.open(BytesIO(img_response.content))
+            
             location = data.get('place', 'Unknown Location')
             location = location.replace('_', ' ').replace('-', ' ').title()
             
@@ -48,16 +63,24 @@ class PhotoFrame:
 
         self.current_image = None
         self.current_location = None
+        self.image_count = 0
         
         # Start immediately
         self.update_image()
     
     def update_image(self):
         try:
+            # Log memory usage before starting
+            mem_before = get_memory_usage()
+            print(f"Memory before update: {mem_before:.1f} MB")
+            
             # Clean up old image
             if self.current_image:
                 self.current_image.close()
                 self.current_image = None
+            
+            # Force garbage collection
+            gc.collect()
             
             # Get new photo
             photo_data = get_random_photo_from_api()
@@ -65,6 +88,11 @@ class PhotoFrame:
             if photo_data and 'image' in photo_data:
                 self.current_image = photo_data['image']
                 self.current_location = photo_data['location']
+                self.image_count += 1
+                
+                # Log the new image with count and timestamp
+                current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                print(f"Image #{self.image_count} - {current_time} - Location: {self.current_location}")
                 
                 # Get window size
                 self.root.update_idletasks()
@@ -74,9 +102,11 @@ class PhotoFrame:
                 if width < 100 or height < 100:
                     width, height = 800, 600
                 
-                # Resize image
+                # Resize original image to fit screen first
+                self.current_image.thumbnail((width, height), Image.Resampling.LANCZOS)
+                
+                # Now make a copy for adding text (smaller image now)
                 display_image = self.current_image.copy()
-                display_image.thumbnail((width, height), Image.Resampling.LANCZOS)
                 
                 # Add location text
                 if self.current_location:
@@ -109,12 +139,23 @@ class PhotoFrame:
                 # Clean up
                 display_image.close()
                 
+                # Log memory usage after
+                mem_after = get_memory_usage()
+                print(f"Memory after update: {mem_after:.1f} MB")
+                
+                # Warning if memory is getting high
+                if mem_after > 200:
+                    print(f"WARNING: High memory usage: {mem_after:.1f} MB")
+                    gc.collect()  # Force garbage collection
+                
                 print("Photo displayed successfully")
             else:
                 print("Failed to get photo")
         
         except Exception as e:
             print(f"Error in update_image: {e}")
+            # Force cleanup on error
+            gc.collect()
         
         # Schedule next update
         self.root.after(UPDATE_INTERVAL, self.update_image)
